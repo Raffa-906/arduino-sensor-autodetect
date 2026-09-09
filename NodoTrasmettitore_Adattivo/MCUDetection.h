@@ -49,70 +49,58 @@ private:
         MCUProfile p;
         p.refVoltage = 3.3f;  // default per maggior parte MCU
 
-#ifdef CONFIG_IDF_FIRMWARE_CHIP_ID
-        // ESP-IDF (ESP32 family)
-        uint32_t chipId = ESP.getChipModel();
-        
-        if (chipId == CHIP_ESP32) {
-            p.type = MCUType::ESP32;
-            p.name = "ESP32 (Classic)";
-            p.adcBits = 12;
-            p.maxAdcChannels = 16;
-            p.maxI2cBuses = 2;
-            p.supportsOneWire = true;
-            p.supportsUART = true;
-            p.supportsDeepSleep = true;
-            p.ramKB = 520;
-            p.flashKB = 4096;
-        }
-        else if (chipId == CHIP_ESP32C3) {
-            p.type = MCUType::ESP32_C3;
-            p.name = "ESP32-C3";
-            p.adcBits = 12;
-            p.maxAdcChannels = 5;  // GPIO0-4
-            p.maxI2cBuses = 1;
-            p.supportsOneWire = true;
-            p.supportsUART = true;
-            p.supportsDeepSleep = true;
-            p.ramKB = 400;
-            p.flashKB = 4096;
-        }
-        else if (chipId == CHIP_ESP32S3) {
-            p.type = MCUType::ESP32_S3;
-            p.name = "ESP32-S3";
-            p.adcBits = 12;
-            p.maxAdcChannels = 20;
-            p.maxI2cBuses = 2;
-            p.supportsOneWire = true;
-            p.supportsUART = true;
-            p.supportsDeepSleep = true;
-            p.ramKB = 512;
-            p.flashKB = 8192;
-        }
-        else if (chipId == CHIP_ESP32C6) {
-            p.type = MCUType::ESP32_C6;
-            p.name = "ESP32-C6";
-            p.adcBits = 12;
-            p.maxAdcChannels = 7;
-            p.maxI2cBuses = 1;
-            p.supportsOneWire = true;
-            p.supportsUART = true;
-            p.supportsDeepSleep = true;
-            p.ramKB = 512;
-            p.flashKB = 4096;
-        }
-        else {
-            p.type = MCUType::UNKNOWN;
-            p.name = "ESP32 sconosciuto";
-            p.adcBits = 12;
-            p.maxAdcChannels = 8;
-            p.maxI2cBuses = 1;
-            p.supportsOneWire = true;
-            p.supportsUART = true;
-            p.supportsDeepSleep = true;
-            p.ramKB = 320;
-            p.flashKB = 4096;
-        }
+#if defined(ARDUINO_ARCH_ESP32)
+        // Famiglia ESP32: la variante esatta (classic, C3, S3, C6) è
+        // già nota a compile-time dal target selezionato nell'IDE.
+        // NOTA: non esiste un chip ID numerico confrontabile a runtime;
+        // ESP.getChipModel() restituisce una STRINGA (es. "ESP32-C3"),
+        // e le costanti CHIP_ESP32*, usate in precedenza, non esistono
+        // nel core Arduino-ESP32.
+#if CONFIG_IDF_TARGET_ESP32C3
+        p.type = MCUType::ESP32_C3;
+        p.name = "ESP32-C3";
+        p.adcBits = 12;
+        p.maxAdcChannels = 5;  // GPIO0-4
+        p.maxI2cBuses = 1;
+        p.supportsOneWire = true;
+        p.supportsUART = true;
+        p.supportsDeepSleep = true;
+        p.ramKB = 400;
+        p.flashKB = 4096;
+#elif CONFIG_IDF_TARGET_ESP32S3
+        p.type = MCUType::ESP32_S3;
+        p.name = "ESP32-S3";
+        p.adcBits = 12;
+        p.maxAdcChannels = 20;
+        p.maxI2cBuses = 2;
+        p.supportsOneWire = true;
+        p.supportsUART = true;
+        p.supportsDeepSleep = true;
+        p.ramKB = 512;
+        p.flashKB = 8192;
+#elif CONFIG_IDF_TARGET_ESP32C6
+        p.type = MCUType::ESP32_C6;
+        p.name = "ESP32-C6";
+        p.adcBits = 12;
+        p.maxAdcChannels = 7;
+        p.maxI2cBuses = 1;
+        p.supportsOneWire = true;
+        p.supportsUART = true;
+        p.supportsDeepSleep = true;
+        p.ramKB = 512;
+        p.flashKB = 4096;
+#else
+        p.type = MCUType::ESP32;
+        p.name = "ESP32 (Classic)";
+        p.adcBits = 12;
+        p.maxAdcChannels = 16;
+        p.maxI2cBuses = 2;
+        p.supportsOneWire = true;
+        p.supportsUART = true;
+        p.supportsDeepSleep = true;
+        p.ramKB = 520;
+        p.flashKB = 4096;
+#endif
 #elif defined(ESP8266)
         p.type = MCUType::ESP8266;
         p.name = "ESP8266";
