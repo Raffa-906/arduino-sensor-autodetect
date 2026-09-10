@@ -27,6 +27,64 @@ uint32_t sleepTimeSeconds = 10;
 
 volatile bool sendCompleted = false;
 
+// Preferences dedicate alla persistenza del pin DHT trovato dallo scan
+// (stesso namespace "treesense" usato da SensorManagerAdaptive per i
+// canali analogici, ma chiave separata).
+Preferences dhtPrefs;
+
+// ============================================================
+//  RICERCA AUTOMATICA DEL PIN DHT22
+//  Il DHT22 non è scansionabile in modo passivo (vedi nota in
+//  DHTSensors.h): bisogna interrogare attivamente un pin alla
+//  volta con il protocollo a timing per sapere se risponde.
+//
+//  Strategia:
+//   1) Se in flash c'è già un pin salvato da uno scan precedente,
+//      lo si riprova per primo: se risponde ancora, si usa subito
+//      senza rifare tutta la scansione (fast path, quasi sempre
+//      vero ad ogni risveglio).
+//   2) Se non risponde più (o non c'era nulla salvato), si scandisce
+//      la lista di pin candidati del profilo hardware corrente
+//      (dhtPin "atteso" per primo, poi le alternative libere).
+//   3) Il primo pin che risponde con un DHT22 valido viene salvato
+//      in flash per i risvegli successivi.
+//
+//  Va chiamata PRIMA di qualunque altra inizializzazione di bus
+//  (I2C, 1-Wire, ADC, WiFi/ESP-NOW): il protocollo del DHT è a
+//  timing sensibile e non deve condividere il processore con
+//  altre attività di comunicazione nello stesso momento.
+// ============================================================
+uint8_t resolveDHTPin(const PinProfile &pins) {
+    dhtPrefs.begin("treesense", false);
+    uint8_t saved = dhtPrefs.getUChar("dht_pin", 0xFF);
+
+    if (saved != 0xFF) {
+        DHTSensorDriver test(saved);
+        if (test.probe()) {
+            Serial.printf("[DHT] Pin salvato GPIO%u confermato\n", saved);
+            dhtPrefs.end();
+            return saved;
+        }
+        Serial.printf("[DHT] Pin salvato GPIO%u non risponde più, ripeto la scansione\n", saved);
+    }
+
+    for (uint8_t i = 0; i < pins.dhtCandidateCount; i++) {
+        uint8_t candidate = pins.dhtCandidatePins[i];
+        Serial.printf("[DHT] Provo GPIO%u...\n", candidate);
+        DHTSensorDriver test(candidate);
+        if (test.probe()) {
+            dhtPrefs.putUChar("dht_pin", candidate);
+            Serial.printf("[DHT] Trovato su GPIO%u, salvato in flash\n", candidate);
+            dhtPrefs.end();
+            return candidate;
+        }
+    }
+
+    Serial.println("[DHT] Nessun DHT22 trovato tra i pin candidati");
+    dhtPrefs.end();
+    return 0xFF;
+}
+
 // ============================================================
 //  FUNZIONI AUSILIARI (esattamente come l'originale)
 // ============================================================
@@ -70,11 +128,15 @@ void setup() {
     Serial.println("   AVVIO NODO TRASMETTITORE (auto-detect, MCU-agnostico) ");
     Serial.println("==============================================");
 
-    // ---- 0. RILEVAMENTO MCU (NUOVO - trasparente all'utente) ----
+    // ---- 0. RILEVAMENTO MCU (fatto una sola volta, riusato sotto) ----
     Serial.println("\n--- 0. RILEVAMENTO MCU E PIN ---");
     MCUProfile mcu = MCUDetector::detect();
-    PinProfile pins = HardwareConfig::getPinProfile();
+    PinProfile pins = HardwareConfig::getPinProfile(mcu);
     HardwareConfig::configureADC(mcu);
+
+    // ---- -1. RICERCA DHT22 (PRIMA di qualunque altro bus/comunicazione) ----
+    Serial.println("\n--- RICERCA PIN DHT22 ---");
+    uint8_t dhtPin = resolveDHTPin(pins);
 
     // Configura ADC come nell'originale (ma ora sa la risoluzione corretta)
     analogSetPinAttenuation(pins.batteryPin, ADC_11db);
@@ -94,11 +156,12 @@ void setup() {
     sensors.begin();
     sensors.printDiscoveryReport(Serial);
 
-    // DHT22: pin dal profilo hardware adattivo, auto-verificato
-    DHTSensorDriver dht(pins.dhtPin);
-    bool dhtOk = dht.probe();
-    if (dhtOk) Serial.println(" - DHT22 rilevato e funzionante");
-    else       Serial.println(" - DHT22 non rilevato (pin scollegato o sensore assente)");
+    // DHT22: pin trovato dinamicamente dallo scan (resolveDHTPin).
+    // L'esito (trovato/non trovato, su quale GPIO) è già stampato
+    // dentro resolveDHTPin(): qui si ripete solo probe() per
+    // popolare i dati (temperatura/umidità) sull'oggetto definitivo.
+    DHTSensorDriver dht(dhtPin);
+    bool dhtOk = (dhtPin != 0xFF) && dht.probe();
 
     // ---- 2. LETTURA E COSTRUZIONE PACCHETTO (IDENTICO all'originale) ----
     Serial.println("\n--- 2. LETTURA SENSORI ---");
@@ -113,7 +176,7 @@ void setup() {
         SensorReading rh;
         rh.type = MeasureType::MEAS_HUMIDITY_AIR;
         rh.value = dht.secondaryHumidity();
-        rh.channel = pins.dhtPin;
+        rh.channel = dhtPin;
         rh.confidence = 1.0f;
         rh.valid = !isnan(rh.value);
         if (rh.valid) readings.push_back(rh);

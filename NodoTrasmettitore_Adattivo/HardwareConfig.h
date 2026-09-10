@@ -14,7 +14,7 @@
 // ============================================================
 
 struct PinProfile {
-    uint8_t dhtPin;              // pin per DHT22 (fisso, non ADC)
+    uint8_t dhtPin;              // pin DHT "atteso"/di default, primo candidato nello scan
     uint8_t batteryPin;          // pin per misurare batteria (ADC)
     const uint8_t* analogPins;   // array di pin ADC disponibili
     uint8_t analogPinCount;
@@ -22,6 +22,8 @@ struct PinProfile {
     uint8_t i2cSdaPin;           // I2C (se disponibile)
     uint8_t i2cSclPin;
     uint8_t oneWirePin;          // 1-Wire (se disponibile)
+    const uint8_t* dhtCandidatePins; // pin digitali liberi da provare per lo scan DHT
+    uint8_t dhtCandidateCount;       // (dhtPin è già incluso come primo elemento)
 };
 
 class HardwareConfig {
@@ -29,6 +31,13 @@ public:
     // Rileva il MCU e restituisce il profilo pin appropriato
     static PinProfile getPinProfile() {
         MCUProfile mcu = MCUDetector::detect();
+        return selectPinProfile(mcu);
+    }
+
+    // Variante che riusa un MCUProfile già rilevato altrove, per
+    // evitare di richiamare MCUDetector::detect() (e ristampare il
+    // banner MCU) più volte nello stesso boot.
+    static PinProfile getPinProfile(const MCUProfile &mcu) {
         return selectPinProfile(mcu);
     }
 
@@ -61,6 +70,19 @@ private:
     static constexpr uint8_t PICO_ANALOG_PINS[] = {26, 27, 28, 29}; // GPIO26-29 sono ADC
     static constexpr uint8_t ESP8266_ANALOG_PINS[] = {A0};
 
+    // Pin digitali candidati per lo scan automatico del DHT22 (vedi
+    // resolveDHTPin() nel .ino). Il primo elemento è il pin "atteso"
+    // di default: se il cablaggio è quello previsto, lo scan lo trova
+    // al primo tentativo. Gli altri sono alternative libere, già
+    // depurate dai pin riservati a I2C/1-Wire/ADC e dai pin di
+    // strapping (bootstrap) del MCU, che non vanno usati per
+    // periferiche esterne generiche.
+    static constexpr uint8_t ESP32_DHT_CANDIDATES[]    = {13, 4, 16, 17};
+    static constexpr uint8_t ESP32_C3_DHT_CANDIDATES[] = {8, 5, 10};
+    static constexpr uint8_t ESP32_S3_DHT_CANDIDATES[] = {10, 13, 14, 21};
+    static constexpr uint8_t PICO_DHT_CANDIDATES[]     = {14, 16, 17, 18};
+    static constexpr uint8_t ESP8266_DHT_CANDIDATES[]  = {2}; // D4: pochissimi GPIO liberi
+
     static PinProfile selectPinProfile(const MCUProfile &mcu) {
         PinProfile profile = {};
 
@@ -75,6 +97,8 @@ private:
                 profile.i2cSdaPin = 21;       // I2C standard
                 profile.i2cSclPin = 22;
                 profile.oneWirePin = 14;      // GPIO14 libero per 1-Wire
+                profile.dhtCandidatePins = ESP32_DHT_CANDIDATES;
+                profile.dhtCandidateCount = sizeof(ESP32_DHT_CANDIDATES);
                 break;
             }
             case MCUType::ESP32_C3: {
@@ -87,6 +111,8 @@ private:
                 profile.i2cSdaPin = 6;        // I2C su GPIO6/7
                 profile.i2cSclPin = 7;
                 profile.oneWirePin = 9;       // GPIO9 libero
+                profile.dhtCandidatePins = ESP32_C3_DHT_CANDIDATES;
+                profile.dhtCandidateCount = sizeof(ESP32_C3_DHT_CANDIDATES);
                 break;
             }
             case MCUType::ESP32_S3: {
@@ -99,6 +125,8 @@ private:
                 profile.i2cSdaPin = 8;        // I2C su GPIO8/9
                 profile.i2cSclPin = 9;
                 profile.oneWirePin = 12;      // GPIO12 libero
+                profile.dhtCandidatePins = ESP32_S3_DHT_CANDIDATES;
+                profile.dhtCandidateCount = sizeof(ESP32_S3_DHT_CANDIDATES);
                 break;
             }
             case MCUType::RP2040: {
@@ -111,6 +139,8 @@ private:
                 profile.i2cSdaPin = 4;        // I2C0 su GPIO4/5
                 profile.i2cSclPin = 5;
                 profile.oneWirePin = 15;      // GPIO15 libero
+                profile.dhtCandidatePins = PICO_DHT_CANDIDATES;
+                profile.dhtCandidateCount = sizeof(PICO_DHT_CANDIDATES);
                 break;
             }
             case MCUType::ESP8266: {
@@ -124,15 +154,25 @@ private:
                 profile.i2cSdaPin = D2;       // GPIO4 SDA
                 profile.i2cSclPin = D1;       // GPIO5 SCL
                 profile.oneWirePin = D3;      // GPIO0 libero
+                profile.dhtCandidatePins = ESP8266_DHT_CANDIDATES;
+                profile.dhtCandidateCount = sizeof(ESP8266_DHT_CANDIDATES);
 #else
-                // Stessi pin come numeri GPIO: questo case non è mai
-                // raggiunto a runtime su ESP32, ma il compilatore
-                // analizza comunque tutti i case dello switch
+                // NOTA: questo ramo non è mai raggiunto a runtime, perché
+                // MCUType::ESP8266 viene selezionato solo quando la macro
+                // ESP8266 è definita (vedi MCUDetection.h). È qui solo
+                // perché il compilatore analizza comunque tutti i case
+                // dello switch anche quando compila per un altro target;
+                // senza questo ramo, un build ESP32 fallirebbe per uso
+                // delle label Dx/A0 (definite solo dal core ESP8266).
+                // Se questo codice diventa raggiungibile, i pin sotto
+                // NON sono validati sull'hardware reale: vanno verificati.
                 profile.dhtPin = 2;
                 profile.batteryPin = 17;      // A0
                 profile.i2cSdaPin = 4;
                 profile.i2cSclPin = 5;
                 profile.oneWirePin = 0;
+                profile.dhtCandidatePins = ESP8266_DHT_CANDIDATES;
+                profile.dhtCandidateCount = sizeof(ESP8266_DHT_CANDIDATES);
 #endif
                 break;
             }
@@ -146,6 +186,8 @@ private:
                 profile.i2cSdaPin = 21;
                 profile.i2cSclPin = 22;
                 profile.oneWirePin = 14;
+                profile.dhtCandidatePins = ESP32_DHT_CANDIDATES;
+                profile.dhtCandidateCount = sizeof(ESP32_DHT_CANDIDATES);
                 break;
         }
 
