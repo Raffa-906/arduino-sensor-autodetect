@@ -8,6 +8,7 @@
 #include "I2CSensors.h"
 #include "OneWireSensors.h"
 #include "AnalogSensors.h"
+#include "DHTSensors.h"
 #include "MCUDetection.h"
 #include "HardwareConfig.h"
 
@@ -27,7 +28,7 @@ public:
     // Costruttore: rileva MCU e carica il profilo pin automaticamente
     SensorManagerAdaptive()
         : _mcu(MCUDetector::detect()),
-          _pins(HardwareConfig::getPinProfile()),
+          _pins(HardwareConfig::getPinProfile(_mcu)),
           _oneWire(_pins.oneWirePin == 255 ? 0 : _pins.oneWirePin),
           _oneWireEnabled(_pins.oneWirePin != 255),
           _i2cBus(0),
@@ -70,20 +71,26 @@ public:
             SensorReading r = drv->read();
             if (r.valid) out.push_back(r);
 
-            // Caso speciale: chip I2C con doppia grandezza (es. SHT31
-            // ritorna temperatura da read(), umidità va presa a parte)
+            // Caso speciale: sensori con doppia grandezza in un solo
+            // ciclo (temperatura da read(), umidità a parte). Vale sia
+            // per chip I2C (SHT31, AHT20) sia per DHT22 (bus digitale).
+            float secondaryHum = NAN;
             if (drv->bus() == BusType::BUS_I2C) {
                 I2CSensorDriver* i2cDrv = static_cast<I2CSensorDriver*>(drv.get());
-                if (i2cDrv->hasSecondaryHumidity()) {
-                    SensorReading rh;
-                    rh.type = MeasureType::MEAS_HUMIDITY_AIR;
-                    rh.value = i2cDrv->secondaryHumidity();
-                    rh.unit = "%";
-                    rh.confidence = 1.0f;
-                    rh.channel = r.channel;
-                    rh.valid = !isnan(rh.value);
-                    if (rh.valid) out.push_back(rh);
-                }
+                if (i2cDrv->hasSecondaryHumidity()) secondaryHum = i2cDrv->secondaryHumidity();
+            } else if (drv->bus() == BusType::BUS_DIGITAL) {
+                DHTSensorDriver* dhtDrv = static_cast<DHTSensorDriver*>(drv.get());
+                if (dhtDrv->hasSecondaryHumidity()) secondaryHum = dhtDrv->secondaryHumidity();
+            }
+            if (!isnan(secondaryHum)) {
+                SensorReading rh;
+                rh.type = MeasureType::MEAS_HUMIDITY_AIR;
+                rh.value = secondaryHum;
+                rh.unit = "%";
+                rh.confidence = 1.0f;
+                rh.channel = r.channel;
+                rh.valid = true;
+                out.push_back(rh);
             }
         }
         return out;
@@ -160,11 +167,17 @@ private:
     void discoverAnalog() {
         Serial.printf("[ANALOG] Scanning %u canali ADC\n", _pins.analogPinCount);
         for (uint8_t i = 0; i < _pins.analogPinCount; i++) {
+            uint8_t pin = _pins.analogPins[i];
+            if (pin == 34 || pin == 35 || pin == 36 || pin == 39) {
+                Serial.printf("  [ADC] GPIO%u: nessun pull interno (ESP32 input-only). "
+                              "Se il canale risulta 'connesso' senza nulla collegato, "
+                              "aggiungere un pull-down esterno (~10k) sul connettore.\n", pin);
+            }
             uint8_t idPin = _pins.analogIdPins ? _pins.analogIdPins[i] : 0xFF;
-            auto drv = std::make_unique<AnalogSensorDriver>(_pins.analogPins[i], _prefs, idPin);
+            auto drv = std::make_unique<AnalogSensorDriver>(pin, _prefs, idPin);
             if (drv->probe()) {
                 _drivers.push_back(std::move(drv));
-                Serial.printf("  [ADC] GPIO%u -> connesso\n", _pins.analogPins[i]);
+                Serial.printf("  [ADC] GPIO%u -> connesso\n", pin);
             }
         }
     }
