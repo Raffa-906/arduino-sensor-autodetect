@@ -91,6 +91,12 @@ public:
     // piatto a 0 o a Vcc per più letture, probabilmente non c'è
     // nulla collegato.
     bool probe() override {
+        // Pull-down interno: un pin davvero scollegato viene forzato
+        // verso massa e letto stabilmente basso (rumore floating
+        // altrimenti simula un segnale "connesso" a valori casuali,
+        // es. 0.5-2.5V, anche a vuoto). Un sensore/potenziometro
+        // reale collegato sovrasta il pull-down con la sua tensione.
+        pinMode(_pin, INPUT_PULLDOWN);
         int samples[5];
         for (int i = 0; i < 5; i++) {
             samples[i] = analogRead(_pin);

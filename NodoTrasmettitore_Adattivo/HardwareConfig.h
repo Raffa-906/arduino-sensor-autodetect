@@ -114,15 +114,26 @@ private:
                 break;
             }
             case MCUType::ESP8266: {
-                // ESP8266: ADC singolo su A0
-                profile.dhtPin = D4;          // GPIO2 per DHT (GPIO4=D2)
-                profile.batteryPin = A0;      // ADC unico
                 profile.analogPins = ESP8266_ANALOG_PINS;
                 profile.analogPinCount = 1;   // solo 1 canale ADC
                 profile.analogIdPins = nullptr;
+#if defined(ESP8266)
+                // Le etichette Dx/A0 esistono solo sul core ESP8266
+                profile.dhtPin = D4;          // GPIO2 per DHT
+                profile.batteryPin = A0;      // ADC unico
                 profile.i2cSdaPin = D2;       // GPIO4 SDA
                 profile.i2cSclPin = D1;       // GPIO5 SCL
                 profile.oneWirePin = D3;      // GPIO0 libero
+#else
+                // Stessi pin come numeri GPIO: questo case non è mai
+                // raggiunto a runtime su ESP32, ma il compilatore
+                // analizza comunque tutti i case dello switch
+                profile.dhtPin = 2;
+                profile.batteryPin = 17;      // A0
+                profile.i2cSdaPin = 4;
+                profile.i2cSclPin = 5;
+                profile.oneWirePin = 0;
+#endif
                 break;
             }
             default:
