@@ -86,30 +86,58 @@ public:
     uint32_t uid() const override { return 0xA00000 | _pin; }
 
     // Un canale ADC "esiste" sempre elettricamente: probe() qui
-    // verifica solo che il pin non sia floating/scollegato,
-    // leggendo varianza minima nel tempo. Se è completamente
-    // piatto a 0 o a Vcc per più letture, probabilmente non c'è
-    // nulla collegato.
+    // verifica solo che il pin non sia floating/scollegato.
+    //
+    // ATTENZIONE HARDWARE: su ESP32 classico i pin ADC1 input-only
+    // (34, 35, 36, 39) NON hanno resistenza di pull interna: la
+    // chiamata pinMode(..., INPUT_PULLDOWN) su questi pin è un
+    // no-op silenzioso (nessun errore, ma non fa nulla). Un pin
+    // scollegato non viene quindi forzato a massa: fluttua per
+    // accoppiamento capacitivo, tipicamente con rumore ad ampia
+    // escursione centrato a metà scala (non stuck-low/high).
+    // Per questo il controllo di "stuck at rail" da solo NON basta
+    // su questi pin, e per questo aggiungiamo un controllo di
+    // varianza qui sotto. Il fix definitivo lato hardware è
+    // comunque mettere una resistenza di pull-down esterna
+    // (~10kΩ) su questi connettori, se il PCB lo consente.
     bool probe() override {
-        // Pull-down interno: un pin davvero scollegato viene forzato
-        // verso massa e letto stabilmente basso (rumore floating
-        // altrimenti simula un segnale "connesso" a valori casuali,
-        // es. 0.5-2.5V, anche a vuoto). Un sensore/potenziometro
-        // reale collegato sovrasta il pull-down con la sua tensione.
         pinMode(_pin, INPUT_PULLDOWN);
-        int samples[5];
-        for (int i = 0; i < 5; i++) {
+        const int N = 20;
+        int samples[N];
+        long sum = 0;
+        for (int i = 0; i < N; i++) {
             samples[i] = analogRead(_pin);
+            sum += samples[i];
             delay(5);
         }
         int minV = samples[0], maxV = samples[0];
-        for (int i = 1; i < 5; i++) {
+        for (int i = 1; i < N; i++) {
             minV = min(minV, samples[i]);
             maxV = max(maxV, samples[i]);
         }
+        float mean = sum / (float)N;
+        float variance = 0;
+        for (int i = 0; i < N; i++) {
+            float d = samples[i] - mean;
+            variance += d * d;
+        }
+        variance /= N;
+        float stddev = sqrtf(variance);
+
         bool stuckLow  = maxV < 15;      // sempre a massa
         bool stuckHigh = minV > 4080;    // sempre a Vcc (ADC 12-bit ESP32)
-        _connected = !(stuckLow || stuckHigh);
+
+        // Rumore da floating: escursione ampia campione-a-campione,
+        // centrata lontano dai rail. Un sensore reale, anche se
+        // variabile nel tempo (es. potenziometro mosso a mano),
+        // è pilotato da una sorgente a bassa impedenza e ha uno
+        // stddev molto più basso su una finestra di 20 letture/100ms.
+        // Soglia empirica: da validare sull'hardware reale.
+        static constexpr float FLOATING_STDDEV_THRESHOLD = 80.0f;
+        bool floatingNoise = (stddev > FLOATING_STDDEV_THRESHOLD) &&
+                              (mean > 500.0f && mean < 3600.0f);
+
+        _connected = !(stuckLow || stuckHigh || floatingNoise);
 
         // Priorità 1: ID chip dedicato letto direttamente dal
         // connettore (nessuna interazione, nessuna ambiguità).
