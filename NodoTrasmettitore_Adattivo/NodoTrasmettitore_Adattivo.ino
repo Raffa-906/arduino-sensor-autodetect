@@ -20,12 +20,20 @@
 
 // Configurazione ESP-NOW (personalizza con il tuo receiver MAC)
 uint8_t receiverAddress[] = {0x34, 0xCD, 0xB0, 0xE9, 0x69, 0x8C};
+
+// CANALE WI-FI: deve essere lo STESSO su cui si trova il ricevitore.
+// Il ricevitore prende il canale dal router "Resonator": leggilo
+// dalla sua seriale ("[WIFI] Connesso ... Canale Wi-Fi AP: N") e
+// metti qui quel numero N. ESP-NOW funziona SOLO se trasmettitore
+// e ricevitore sono sullo stesso canale: canali diversi = nessun
+// pacchetto ricevuto (o solo alcuni, per interferenze/DTIM).
 #define MY_WIFI_CHANNEL 6
 
 uint32_t sleepTimeSeconds = 10;
 #define uS_TO_S_FACTOR 1000000ULL
 
 volatile bool sendCompleted = false;
+volatile esp_now_send_status_t sendStatus = ESP_NOW_SEND_FAIL;
 
 // Preferences dedicate alla persistenza del pin DHT trovato dallo scan
 // (stesso namespace "treesense" usato da SensorManagerAdaptive per i
@@ -106,6 +114,7 @@ float readBatteryVoltage(uint8_t batteryPin) {
 void OnDataSent(const wifi_tx_info_t *info, esp_now_send_status_t status) {
     Serial.print("[CALLBACK ESP-NOW] Esito invio: ");
     Serial.println(status == ESP_NOW_SEND_SUCCESS ? "SUCCESS" : "FAIL");
+    sendStatus = status;
     sendCompleted = true;
 }
 
@@ -229,15 +238,32 @@ void setup() {
     Serial.printf("[PACKET] Dim: %u B | ID: 0x%08X | Letture: %u | VBat: %.2fV\n",
                   sizeof(SensorPacket), packet.nodeID, packet.readingCount, packet.batteryVolts);
 
-    esp_err_t sendResult = esp_now_send(receiverAddress, (uint8_t *)&packet, sizeof(SensorPacket));
-    if (sendResult != ESP_OK) {
-        Serial.printf("[DEBUG] Errore esp_now_send(): %d\n", sendResult);
+    // ESP-NOW non garantisce la consegna: se l'invio fallisce (ricevitore
+    // occupato, canale sbagliato, ...) il pacchetto andrebbe perso per
+    // sempre perché il nodo va subito in deep sleep. Riprovo fino a
+    // 3 volte prima di rinunciare.
+    bool delivered = false;
+    for (int attempt = 1; attempt <= 3 && !delivered; attempt++) {
+        sendCompleted = false;
+        sendStatus = ESP_NOW_SEND_FAIL;
+        esp_err_t sendResult = esp_now_send(receiverAddress, (uint8_t *)&packet, sizeof(SensorPacket));
+        if (sendResult != ESP_OK) {
+            Serial.printf("[DEBUG] Errore esp_now_send(): %d\n", sendResult);
+            delay(200);
+            continue;
+        }
+        unsigned long startWait = millis();
+        while (!sendCompleted && (millis() - startWait < 1500)) {
+            delay(10);
+        }
+        delivered = (sendStatus == ESP_NOW_SEND_SUCCESS);
+        if (!delivered) {
+            Serial.printf("[ESP-NOW] Tentativo %d/3 senza ACK dal ricevitore, riprovo...\n", attempt);
+            delay(300);
+        }
     }
-
-    unsigned long startWait = millis();
-    while (!sendCompleted && (millis() - startWait < 1500)) {
-        delay(10);
-    }
+    Serial.println(delivered ? "[ESP-NOW] Pacchetto consegnato al ricevitore."
+                             : "[ESP-NOW] Tutti i tentativi falliti: pacchetto PERSO.");
 
     // ---- 5. SLEEP (invariato) ----
     Serial.println("\n--- 5. FASE DI SLEEP ---");
