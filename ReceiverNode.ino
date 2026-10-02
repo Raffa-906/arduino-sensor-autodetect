@@ -28,8 +28,19 @@ Preferences journalMem;
 uint32_t head = 0;
 uint32_t tail = 0;
 
-volatile bool newDataAvailable = false;
-SensorPacket freshData;
+// ============================================================
+//  CODA PACCHETTI ESP-NOW
+//  Il loop può restare bloccato vari secondi dentro una
+//  richiesta HTTP (time-out di 5s di default per HTTPClient):
+//  con un solo slot, i pacchetti arrivati nel frattempo venivano
+//  scartati IN SILENZIO -> "il ricevitore perde qualche dato".
+//  Con la coda, arrivano al massimo QUEUE_SIZE pacchetti in
+//  coda prima di perderne uno (e il caso viene stampato).
+// ============================================================
+#define QUEUE_SIZE 4
+SensorPacket packetQueue[QUEUE_SIZE];
+volatile uint8_t qHead = 0;   // indice di scrittura (callback ESP-NOW)
+volatile uint8_t qTail = 0;   // indice di lettura (loop)
 
 // Costruisce il JSON includendo, per ogni lettura, il tipo di
 // sensore (es. "MEAS_TEMPERATURE", "MEAS_HUMIDITY_AIR", ...) così
@@ -40,6 +51,7 @@ bool sendToFastAPI(const SensorPacket& data) {
 
   HTTPClient http;
   http.begin(SERVER_URL);
+  http.setTimeout(2000); // un server lento non deve bloccare il loop per 5+ secondi, altrimenti i pacchetti ESP-NOW in arrivo si accumulano
   http.addHeader("Content-Type", "application/json");
 
   String jsonPayload = "{";
@@ -77,13 +89,18 @@ void saveToFlash(const SensorPacket& data) {
 }
 
 void OnDataRecv(const esp_now_recv_info_t *recv_info, const uint8_t *incomingData, int len) {
-  if (len == sizeof(SensorPacket) && !newDataAvailable) {
-    memcpy(&freshData, incomingData, sizeof(SensorPacket));
-    newDataAvailable = true;
-  } else if (len != sizeof(SensorPacket)) {
+  if (len != sizeof(SensorPacket)) {
     Serial.printf("[ESP-NOW RECV] Pacchetto scartato: dimensione %d != attesa %u (versione firmware diversa tra nodo e ricevitore?)\n",
                   len, (unsigned)sizeof(SensorPacket));
+    return;
   }
+  uint8_t next = (qHead + 1) % QUEUE_SIZE;
+  if (next == qTail) {
+    Serial.println("[ESP-NOW RECV] Coda piena: pacchetto perso (loop bloccato da HTTP troppo lento?)");
+    return;
+  }
+  memcpy(&packetQueue[qHead], incomingData, sizeof(SensorPacket));
+  qHead = next;
 }
 
 void setup() {
@@ -106,9 +123,16 @@ void setup() {
   }
 
   if (WiFi.status() == WL_CONNECTED) {
-    Serial.printf("\n[WIFI] Connesso. IP: %s | Canale Wi-Fi AP: %d\n", 
+    // IMPORTANTE: di default, quando la STA è connessa a un router,
+    // la radio va in modem-sleep tra un beacon e l'altro. I pacchetti
+    // ESP-NOW in arrivo in quelle finestre VENGONO PERSI: ecco perché
+    // il ricevitore "vedeva" solo una parte dei dati. Con sleep
+    // disattivato la radio resta sempre in ascolto.
+    WiFi.setSleep(false);
+    Serial.printf("\n[WIFI] Connesso. IP: %s | Canale Wi-Fi AP: %d\n",
                   WiFi.localIP().toString().c_str(), WiFi.channel());
-    Serial.println("[AVVISO] Assicurati che il trasmettitore invii sullo stesso canale!");
+    Serial.println("[AVVISO] Il trasmettitore DEVE usare QUESTO canale:");
+    Serial.println("         aggiorna MY_WIFI_CHANNEL in NodoTrasmettitore_Adattivo.ino con questo numero!");
   } else {
     Serial.println("\n[WIFI] Rete assente. I dati verranno salvati in Flash.");
   }
@@ -122,9 +146,9 @@ void setup() {
 }
 
 void loop() {
-  if (newDataAvailable) {
-    SensorPacket currentData = freshData;
-    newDataAvailable = false; 
+  while (qTail != qHead) {
+    SensorPacket currentData = packetQueue[qTail];
+    qTail = (uint8_t)((qTail + 1) % QUEUE_SIZE);
 
     Serial.printf("[ESP-NOW RECV] Nodo: 0x%08X | Bat: %.2fV | Letture: %u\n",
                   currentData.nodeID, currentData.batteryVolts, currentData.readingCount);
